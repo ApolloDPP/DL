@@ -1,0 +1,182 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jul 21 09:27:59 2020
+
+@author: ApolloDPP
+"""
+
+
+"""
+NMS算法原理：Non-Maximum suppreession,在物体检测中，非常大概率出现多个region proposal
+对应同一个物体，在网络预测结果后进行NMS操作，去除重复冗杂的预测。
+
+算法实现：
+1.通过网络预测结果（类似与softmax之后的概率值），region proposal框按照概率由大到小排列（
+也即每个region 
+proposal的得分），当其他得分低的框与其重叠达到一定程度时就要舍弃掉（去除冗余预测）；
+2.两个框的重叠程度评价指标为IoU:两框交集/两框并集
+"""
+
+import numpy as np
+import torch
+
+
+#NMS的评价指标IoU参数的计算：两检测框的交集面积与并集面积的比值
+def IoU(RP1,RP2):
+#RP1和RP2存储两个region proposal的坐标值
+        x1_l=RP1[0]     #第一个region proposal的坐标值
+        y1_l=RP1[1]
+        x1_r=RP1[2]
+        y1_r=RP1[3]
+        
+        x2_l=RP2[0]     #第二个region proposal的坐标值
+        y2_l=RP2[1]
+        x2_r=RP2[2]
+        y2_r=RP2[3]
+        
+        delta_x=abs(x1_l-x2_l)
+        delta_y=abs(y1_l-y2_l)
+        
+        
+        #计算两个region proposal的面积
+        S_RP1=(x1_r-x1_l+1)*(y1_l-y1_r+1)
+        S_RP2=(x2_r-x2_l+1)*(y2_l-y2_r+1)
+        
+        #穷举二者之间的空间位置，总供12种绝对位置，但可以简化为6种相对位置计算
+        if np.all(x1_l<x2_l)or np.all(x1_l==x2_l):
+                RP1=RP1
+                RP2=RP2
+        else:
+                S_PR=RP1
+                RP1=RP2
+                RP2=S_PR
+        
+        #计算两个region proposal的交集面积S1与并集面积S2
+        
+        if np.any(x2_r<x1_r ) and np.any(y1_l>y2_l) and np.any(y1_r<y2_r):
+                         s1=S_RP2
+                         s2=S_RP1
+                    
+        elif np.any(x2_r>x1_r ) and np.any(y2_l>y1_l) and np.any(y2_r>y1_r):
+                         s1=(x1_r-x1_l-delta_x)*(y1_l-y1_r-delta_y)
+                         s2=S_RP2+S_RP1-s1
+                         
+        elif np.any(x2_r>x1_r ) and np.any(y2_l<y1_l) and np.any(y2_r<y1_r):
+                         s1=(x1_r-x1_l-delta_x)*(y2_l-y2_r-delta_y)
+                         s2=S_RP2+S_RP1-s1
+                        
+        elif np.any(x2_r<x1_r ) and np.any(y2_l>y1_l) and np.any(y2_r<y1_r):
+                         s1=(y1_l-y1_r)*(x2_r-x2_l)
+                         s2=S_RP2+S_RP1-s1
+                         
+        elif np.any(x2_r>x1_r ) and np.any(y2_l<y1_l) and np.any(y2_r>y1_r):
+                         s1=(x1_r-x1_l-delta_x)*(y2_l-y2_r)
+                         s2=S_RP2+S_RP1-s1
+                        
+        else:
+                         s1=(y1_l-y1_r)*(x1_r-x1_l-delta_x)
+                         s2=S_RP2+S_RP1-s1
+                         
+        #IoU的计算，s1/s2
+        I=s1/s2
+        
+        return I
+        
+        
+        
+def NMS(RP_axis_scores,threshold):
+#RP_axis_scores包含region proosal的左上角和右下角坐标，已经所对应的scores值，是一个n*5维矩阵
+#threshold为IoU指标去除冗余框的阈值；
+        
+        scores=RP_axis_scores[:,4]      #第i个region proposal的预测得分
+        
+        #对每个region proposal预测得分进行降序排列，并且需要记录索引，与其RP_axis相对应
+        scores=torch.tensor(scores)
+        scores,index=torch.sort(scores,dim=0,descending=True)
+        scores=np.array(scores)
+        index=torch.tensor(index)
+        
+        #对于一个物体最终保留达到IoU指标要求的检测框（region proposal）
+        if len(index)==1:
+                i=index.item()
+                RP_max=RP_axis_scores[0,:]
+        else:
+                i=index[0].item()
+                RP_max=RP_axis_scores[0,:]
+        
+        #开始遍历计算其他region proposal与得分最高框的IoU值
+        index_keep=[]   #保存符合条件的region proposal的索引值
+        index_keep.append(index[0].item())   
+        for i in range(len(index)-1):
+                RP1=RP_max
+                RP2=RP_axis_scores[index[i+1].item(),:]
+                I=IoU(RP1,RP2)
+                if np.all(I>threshold):
+                        index_keep.append(index[i+1].item())           
+                       
+                else:
+                        break
+
+        return index_keep
+
+
+#测试NMS算法的正确性
+def NMS_test():
+       
+        RP_axis_scores=np.array([[0,3,3,0,0.7],
+                        [1,4,3,1,0.4],
+                        [0,4,2,2,0.5],
+                        [0,2,3,0,0.5],
+                        [0,3,3,0,0.71]
+                        ])
+      
+       
+        RP_axis_scores=np.array(RP_axis_scores)
+        
+        threshold=0.3
+        index_keep=NMS(RP_axis_scores,threshold)
+        print(index_keep)
+      
+       
+        
+        return index_keep
+
+if __name__ == '__main__':
+        NMS_test()
+        
+
+
+
+
+
+
+                
+
+                
+
+
+                        
+                
+                
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
